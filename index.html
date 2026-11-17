@@ -848,6 +848,7 @@
     viewport.scrollLeft = 0;
     viewport.scrollTop = 0;
     zoomDisplay.textContent = '100 %';
+    compose();
   }
 
   // Zoomar så att punkten (cx, cy) i visningsytan står still
@@ -868,6 +869,7 @@
     viewport.scrollTop  += (nr.top + fy * nr.height) - (vr.top + cy);
     zoomDisplay.textContent = Math.round(zoom * 100) + ' %';
     closePopup();
+    compose();   // texterna ritas om i rätt storlek
   }
 
   document.getElementById('zoomInBtn').addEventListener('click', () => setZoom(zoom * ZOOM_STEP));
@@ -1492,7 +1494,7 @@
 
     if (lineDraft && !forExport) drawLineDraft();
 
-    Object.values(state.labels).forEach(drawLabel);
+    Object.values(state.labels).forEach(l => drawLabel(l, forExport));
   }
 
   let composePending = false;
@@ -1507,12 +1509,15 @@
     compose();
   }
 
-  function drawLabel(l) {
-    ctx.font = `600 ${l.size}px 'Segoe UI', Arial, sans-serif`;
+  // Texter har samma storlek på skärmen oavsett zoom.
+  // l.size är storleken vid 100 % (hela kartan), och används också i PNG-bilden.
+  function drawLabel(l, forExport) {
+    const size = forExport ? l.size : l.size / zoom;
+    ctx.font = `600 ${size}px 'Segoe UI', Arial, sans-serif`;
     const textW = ctx.measureText(l.text).width;
-    const padX = l.size * 0.55, padY = l.size * 0.35;
-    const w = textW + padX * 2, h = l.size * 1.2 + padY * 2;
-    const x = l.x - w / 2, y = l.y - h / 2, r = l.size * 0.4;
+    const padX = size * 0.55, padY = size * 0.35;
+    const w = textW + padX * 2, h = size * 1.2 + padY * 2;
+    const x = l.x - w / 2, y = l.y - h / 2, r = size * 0.4;
 
     ctx.beginPath();
     ctx.moveTo(x + r, y);
@@ -1523,7 +1528,7 @@
     ctx.closePath();
     ctx.fillStyle = 'rgba(255,255,255,0.92)';
     ctx.fill();
-    ctx.lineWidth = Math.max(1, l.size / 12);
+    ctx.lineWidth = Math.max(1, size / 12);
     ctx.strokeStyle = 'rgba(0,0,0,0.3)';
     ctx.stroke();
 
