@@ -206,16 +206,46 @@
       justify-content: center;
     }
 
+    /* Ytan som kartan visas i – får rullningslister när man zoomar in */
+    .viewport {
+      position: relative;
+      overflow: auto;
+      max-height: calc(100vh - 160px);
+      min-height: 200px;
+      border-radius: 6px;
+      background: #f7f8f4;
+    }
+
     canvas {
       display: block;
-      max-width: 100%;
       height: auto;
       margin: 0 auto;
       cursor: crosshair;
-      border-radius: 6px;
     }
     canvas.text-mode { cursor: pointer; }
     canvas.erase-mode { cursor: none; }
+    canvas.pan-mode { cursor: grab; }
+    canvas.panning { cursor: grabbing; }
+
+    .zoom-display {
+      min-width: 58px;
+      text-align: center;
+      font-weight: 600;
+      font-size: 0.92rem;
+      color: #2f5d34;
+    }
+    .zoom-btn {
+      min-width: 40px;
+      padding: 7px 10px;
+      font-size: 1.05rem;
+      line-height: 1;
+    }
+    .zoom-help {
+      text-align: center;
+      font-size: 0.85rem;
+      color: #5b665b;
+      margin: 10px 0 0;
+    }
 
     /* Ring som visar penselns/suddgummits storlek */
     .brush-ring {
@@ -324,6 +354,14 @@
       <input type="range" id="sizeSlider" min="2" max="40" value="8" />
       <div class="size-preview"><div class="size-dot" id="sizeDot"></div></div>
     </div>
+
+    <div class="tool-group">
+      <span class="tool-label">Zoom</span>
+      <button class="btn btn-light zoom-btn" id="zoomOutBtn" title="Zooma ut">−</button>
+      <span class="zoom-display" id="zoomDisplay">100 %</span>
+      <button class="btn btn-light zoom-btn" id="zoomInBtn" title="Zooma in">+</button>
+      <button class="btn btn-light" id="zoomFitBtn" title="Visa hela kartan">⤢ Hela kartan</button>
+    </div>
   </div>
 
   <div class="stage">
@@ -336,7 +374,10 @@
       </div>
     </div>
     <p class="hint" id="hint" hidden></p>
-    <canvas id="canvas" hidden></canvas>
+    <div class="viewport" id="viewport" hidden>
+      <canvas id="canvas"></canvas>
+    </div>
+    <p class="zoom-help" id="zoomHelp" hidden>🔍 Zooma med mushjulet eller knapparna. Flytta kartan när du har zoomat in: håll in <b>mellanslag</b> och dra, eller dra med mushjulet intryckt.</p>
   </div>
 
   <div id="bottomArea" hidden>
@@ -411,6 +452,9 @@
   const brushRing    = document.getElementById('brushRing');
   const undoBtn      = document.getElementById('undoBtn');
   const saveStatus   = document.getElementById('saveStatus');
+  const viewport     = document.getElementById('viewport');
+  const zoomHelp     = document.getElementById('zoomHelp');
+  const zoomDisplay  = document.getElementById('zoomDisplay');
 
   // Arbetsytor som inte syns: färdiga färgområden + hjälpytor
   const areas = document.createElement('canvas'), actx = areas.getContext('2d');
@@ -501,10 +545,12 @@
         c.height = img.naturalHeight;
       });
       dropzone.hidden = true;
-      canvas.hidden = false;
+      viewport.hidden = false;
+      zoomHelp.hidden = false;
       toolbar.hidden = false;
       bottomArea.hidden = false;
       hintEl.hidden = false;
+      fitMap();
       setTool('draw');
       if (message) showHint(message, 'info');
       redraw();
@@ -722,12 +768,104 @@
     }
   }
 
+  // ─── Zoom ─────────────────────────────────────────────────────────────────
+  // zoom = 1 betyder att hela kartan syns ("Hela kartan").
+  // fitW = kartans bredd på skärmen vid zoom 1.
+  const ZOOM_MIN = 0.5, ZOOM_MAX = 8, ZOOM_STEP = 1.25;
+  let zoom = 1;
+  let fitW = 1;
+
+  function fitWidth() {
+    const availW = viewport.clientWidth;
+    const availH = Math.max(200, window.innerHeight - 160);
+    return Math.max(50, Math.min(availW, canvas.width, availH * canvas.width / canvas.height));
+  }
+
+  // Kartpixlar per skärmpixel när hela kartan syns (oberoende av zoom).
+  // Används för tjocklek och textstorlek, så att de blir lika stora på
+  // kartan oavsett hur inzoomad man är.
+  function baseScale() {
+    return canvas.width / fitW;
+  }
+
+  function fitMap() {
+    fitW = fitWidth();
+    zoom = 1;
+    canvas.style.width = Math.round(fitW) + 'px';
+    viewport.scrollLeft = 0;
+    viewport.scrollTop = 0;
+    zoomDisplay.textContent = '100 %';
+  }
+
+  // Zoomar så att punkten (cx, cy) i visningsytan står still
+  function setZoom(z, cx, cy) {
+    if (!state.img) return;
+    z = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+    const vr = viewport.getBoundingClientRect();
+    if (cx === undefined) { cx = viewport.clientWidth / 2; cy = viewport.clientHeight / 2; }
+    const cr = canvas.getBoundingClientRect();
+    const fx = (vr.left + cx - cr.left) / cr.width;
+    const fy = (vr.top + cy - cr.top) / cr.height;
+
+    zoom = z;
+    canvas.style.width = Math.round(fitW * zoom) + 'px';
+
+    const nr = canvas.getBoundingClientRect();
+    viewport.scrollLeft += (nr.left + fx * nr.width) - (vr.left + cx);
+    viewport.scrollTop  += (nr.top + fy * nr.height) - (vr.top + cy);
+    zoomDisplay.textContent = Math.round(zoom * 100) + ' %';
+    closePopup();
+  }
+
+  document.getElementById('zoomInBtn').addEventListener('click', () => setZoom(zoom * ZOOM_STEP));
+  document.getElementById('zoomOutBtn').addEventListener('click', () => setZoom(zoom / ZOOM_STEP));
+  document.getElementById('zoomFitBtn').addEventListener('click', () => { fitMap(); closePopup(); });
+
+  // Mushjulet zoomar där muspekaren står
+  viewport.addEventListener('wheel', e => {
+    if (!state.img) return;
+    e.preventDefault();
+    const vr = viewport.getBoundingClientRect();
+    const f = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    setZoom(zoom * f, e.clientX - vr.left, e.clientY - vr.top);
+  }, { passive: false });
+
+  // Behåll samma zoom om fönstret ändrar storlek
+  window.addEventListener('resize', () => {
+    if (!state.img) return;
+    fitW = fitWidth();
+    canvas.style.width = Math.round(fitW * zoom) + 'px';
+  });
+
+  // Flytta kartan: mellanslag + dra, eller dra med mushjulsknappen
+  let spaceDown = false;
+  let pan = null;
+
+  function isTyping(e) {
+    return e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
+  }
+
+  document.addEventListener('keydown', e => {
+    if (e.code !== 'Space' || isTyping(e) || !state.img) return;
+    e.preventDefault();
+    if (!spaceDown) {
+      spaceDown = true;
+      canvas.classList.add('pan-mode');
+      brushRing.hidden = true;
+    }
+  });
+  document.addEventListener('keyup', e => {
+    if (e.code !== 'Space') return;
+    spaceDown = false;
+    canvas.classList.remove('pan-mode');
+  });
+
   // ─── Ring som visar penselns/suddgummits storlek ──────────────────────────
   canvas.addEventListener('mousemove', e => {
-    if (state.tool === 'text') { brushRing.hidden = true; return; }
+    if (state.tool === 'text' || spaceDown || pan) { brushRing.hidden = true; return; }
     brushRing.hidden = false;
     brushRing.className = 'brush-ring ' + state.tool;
-    const d = Math.max(state.size, 6);
+    const d = Math.max(state.size * zoom, 6);
     brushRing.style.width = d + 'px';
     brushRing.style.height = d + 'px';
     brushRing.style.left = e.clientX + 'px';
@@ -752,6 +890,15 @@
   }
 
   canvas.addEventListener('mousedown', e => {
+    // Flytta kartan
+    if (e.button === 1 || (e.button === 0 && spaceDown)) {
+      e.preventDefault();
+      closePopup();
+      pan = { x: e.clientX, y: e.clientY, sl: viewport.scrollLeft, st: viewport.scrollTop };
+      canvas.classList.add('panning');
+      brushRing.hidden = true;
+      return;
+    }
     if (e.button !== 0) return;
     e.preventDefault();
     const p = toMap(e);
@@ -773,7 +920,7 @@
     current = {
       erase: state.tool === 'erase',
       color: state.color,
-      width: state.size * mapScale(),
+      width: state.size * baseScale(),
       points: [p],
       group: null
     };
@@ -782,6 +929,11 @@
   });
 
   window.addEventListener('mousemove', e => {
+    if (pan) {
+      viewport.scrollLeft = pan.sl - (e.clientX - pan.x);
+      viewport.scrollTop  = pan.st - (e.clientY - pan.y);
+      return;
+    }
     if (dragLabel) {
       if (!dragLabel.moved && Math.hypot(e.clientX - dragLabel.sx, e.clientY - dragLabel.sy) > 3) {
         dragLabel.moved = true;
@@ -801,6 +953,11 @@
   });
 
   window.addEventListener('mouseup', e => {
+    if (pan) {
+      pan = null;
+      canvas.classList.remove('panning');
+      return;
+    }
     if (dragLabel) {
       const d = dragLabel;
       dragLabel = null;
@@ -953,7 +1110,7 @@
     } else if (existing) {
       existing.text = text;
     } else {
-      state.labels[group] = { text, x: point.x, y: point.y, size: 15 * mapScale() };
+      state.labels[group] = { text, x: point.x, y: point.y, size: 15 * baseScale() };
     }
     closePopup();
     compose();
@@ -1039,7 +1196,7 @@
       // 2. Inre yta = området krympt med kantens bredd
       const own = state.strokes.filter(s => s.group === g);
       const avgW = own.reduce((sum, s) => sum + s.width, 0) / own.length;
-      const edge = Math.max(2 * mapScale(), avgW * 0.18);
+      const edge = Math.max(2 * baseScale(), avgW * 0.18);
       clear(ictx);
       ictx.drawImage(mask, 0, 0);
       ictx.globalCompositeOperation = 'destination-in';
