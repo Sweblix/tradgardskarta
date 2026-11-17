@@ -87,10 +87,15 @@
     }
     .btn-danger:hover { background: #fdf0ea; }
 
-    /* Verktygsval (Rita / Skriv text) */
+    .btn-big {
+      font-size: 1rem;
+      padding: 12px 26px;
+    }
+
+    /* Verktygsval (Rita / Sudda / Text) */
     .tool-btn {
       font-family: inherit;
-      font-size: 0.92rem;
+      font-size: 0.95rem;
       font-weight: 600;
       padding: 8px 14px;
       border-radius: 8px;
@@ -98,12 +103,24 @@
       background: #fff;
       color: #1f2a1f;
       cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
     }
+    .tool-btn .icon { font-size: 1.15rem; line-height: 1; }
     .tool-btn:hover { border-color: #2f5d34; }
     .tool-btn.active {
       border-color: #2f5d34;
-      background: #eef5ea;
-      color: #2f5d34;
+      background: #2f5d34;
+      color: #fff;
+    }
+    /* Suddgummit får en egen, tydlig färg */
+    .tool-btn.eraser { border-color: #e0b9a6; color: #b23b00; }
+    .tool-btn.eraser:hover { border-color: #b23b00; }
+    .tool-btn.eraser.active {
+      border-color: #b23b00;
+      background: #b23b00;
+      color: #fff;
     }
 
     /* Färgval */
@@ -155,6 +172,7 @@
       min-height: 1.3em;
     }
     .hint.warn { color: #b23b00; font-weight: 600; }
+    .hint.erase { color: #b23b00; font-weight: 600; }
 
     .dropzone {
       border: 3px dashed #b7c4b0;
@@ -184,6 +202,31 @@
       border-radius: 6px;
     }
     canvas.text-mode { cursor: pointer; }
+    canvas.erase-mode { cursor: none; }
+
+    /* Ring som visar penselns/suddgummits storlek */
+    .brush-ring {
+      position: fixed;
+      z-index: 40;
+      pointer-events: none;
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+    }
+    .brush-ring.draw {
+      border: 1.5px solid #1f2a1f;
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.8);
+    }
+    .brush-ring.erase {
+      border: 2px dashed #b23b00;
+      background: rgba(255,255,255,0.45);
+    }
+
+    /* Knapp längst ned */
+    .bottom-bar {
+      display: flex;
+      justify-content: center;
+      margin-top: 18px;
+    }
 
     /* Textruta för områden */
     .label-popup {
@@ -240,8 +283,9 @@
 
     <div class="tool-group">
       <span class="tool-label">Verktyg</span>
-      <button class="tool-btn active" data-tool="draw">✏️ Rita</button>
-      <button class="tool-btn" data-tool="text">🏷️ Skriv text</button>
+      <button class="tool-btn active" data-tool="draw" title="Rita på kartan"><span class="icon">✏️</span>Rita</button>
+      <button class="tool-btn eraser" data-tool="erase" title="Sudda ut färg"><span class="icon">🧽</span>Sudda</button>
+      <button class="tool-btn" data-tool="text" title="Skriv eller flytta text"><span class="icon">🏷️</span>Text</button>
     </div>
 
     <div class="tool-group">
@@ -267,8 +311,14 @@
     <canvas id="canvas" hidden></canvas>
   </div>
 
+  <div class="bottom-bar" id="bottomBar" hidden>
+    <button class="btn btn-big" id="savePngBtn">💾 Spara bilden som PNG</button>
+  </div>
+
   <input type="file" id="fileInput" accept="image/*" hidden />
 </div>
+
+<div class="brush-ring" id="brushRing" hidden></div>
 
 <div class="label-popup" id="labelPopup" hidden>
   <div class="label-popup-title" id="labelPopupTitle">Text för området</div>
@@ -283,6 +333,7 @@
 <script>
   // ─── Tillstånd ────────────────────────────────────────────────────────────
   // Varje markering sparas som ett eget "drag" (färg, tjocklek, punkter, område).
+  // Suddgummidrag sparas också som drag (erase: true) och tar bort färg under sig.
   // Drag i samma färg som rör vid varandra hör till samma område (group).
   // Varje område kan ha högst en text, som sparas i state.labels[områdes-id].
   // Koordinaterna är i kartbildens egna pixlar, så allt hamnar rätt
@@ -297,23 +348,36 @@
   };
   let nextGroup = 1;
 
+  // Genomskinlighet: 60 % genomskinlig yta, 30 % genomskinlig kant
+  const FILL_ALPHA = 0.4;
+  const EDGE_ALPHA = 0.7;
+
   const COLORS = ['#2e7d32', '#8bc34a', '#f9a825', '#e65100', '#c62828', '#ad1457', '#6a1b9a', '#1565c0', '#6d4c41', '#ffffff'];
 
   const HINTS = {
-    draw: 'Håll in vänster musknapp och rita på kartan.',
-    text: 'Klicka på ett färgat område för att skriva, ändra eller ta bort dess text.'
+    draw:  'Håll in vänster musknapp och rita på kartan.',
+    erase: '🧽 Suddgummit är valt – håll in vänster musknapp och dra över färg för att sudda ut den.',
+    text:  'Klicka på ett färgat område för att skriva, ändra eller ta bort dess text. Dra i en text för att flytta den.'
   };
 
   const canvas      = document.getElementById('canvas');
   const ctx         = canvas.getContext('2d');
   const dropzone    = document.getElementById('dropzone');
   const toolbar     = document.getElementById('toolbar');
+  const bottomBar   = document.getElementById('bottomBar');
   const hintEl      = document.getElementById('hint');
   const fileInput   = document.getElementById('fileInput');
   const swatchesEl  = document.getElementById('swatches');
   const customColor = document.getElementById('customColor');
   const sizeSlider  = document.getElementById('sizeSlider');
   const sizeDot     = document.getElementById('sizeDot');
+  const brushRing   = document.getElementById('brushRing');
+
+  // Arbetsytor som inte syns: färdiga färgområden + hjälpytor
+  const areas = document.createElement('canvas'), actx = areas.getContext('2d');
+  const mask  = document.createElement('canvas'), mctx = mask.getContext('2d');
+  const inner = document.createElement('canvas'), ictx = inner.getContext('2d');
+  const temp  = document.createElement('canvas'), tctx = temp.getContext('2d');
 
   // ─── Ladda upp karta ──────────────────────────────────────────────────────
   document.getElementById('uploadBtn').addEventListener('click', () => fileInput.click());
@@ -345,11 +409,14 @@
       state.strokes = [];
       state.labels = {};
       closePopup();
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
+      [canvas, areas, mask, inner, temp].forEach(c => {
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+      });
       dropzone.hidden = true;
       canvas.hidden = false;
       toolbar.hidden = false;
+      bottomBar.hidden = false;
       hintEl.hidden = false;
       showHint();
       redraw();
@@ -366,6 +433,8 @@
     state.tool = tool;
     document.querySelectorAll('.tool-btn').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
     canvas.classList.toggle('text-mode', tool === 'text');
+    canvas.classList.toggle('erase-mode', tool === 'erase');
+    brushRing.hidden = true;
     closePopup();
     showHint();
   }
@@ -387,6 +456,7 @@
     swatchesEl.querySelectorAll('.swatch').forEach(s => {
       s.classList.toggle('active', s.title === c);
     });
+    if (state.tool !== 'draw') setTool('draw');
     updatePreview();
   }
 
@@ -403,18 +473,33 @@
   let hintTimer = null;
   function showHint(warning) {
     clearTimeout(hintTimer);
+    hintEl.classList.remove('warn', 'erase');
     if (warning) {
       hintEl.textContent = warning;
       hintEl.classList.add('warn');
       hintTimer = setTimeout(() => showHint(), 5000);
     } else {
       hintEl.textContent = HINTS[state.tool];
-      hintEl.classList.remove('warn');
+      if (state.tool === 'erase') hintEl.classList.add('erase');
     }
   }
 
-  // ─── Rita med vänster musknapp ────────────────────────────────────────────
-  let current = null;
+  // ─── Ring som visar penselns/suddgummits storlek ──────────────────────────
+  canvas.addEventListener('mousemove', e => {
+    if (state.tool === 'text') { brushRing.hidden = true; return; }
+    brushRing.hidden = false;
+    brushRing.className = 'brush-ring ' + state.tool;
+    const d = Math.max(state.size, 6);
+    brushRing.style.width = d + 'px';
+    brushRing.style.height = d + 'px';
+    brushRing.style.left = e.clientX + 'px';
+    brushRing.style.top = e.clientY + 'px';
+  });
+  canvas.addEventListener('mouseleave', () => { brushRing.hidden = true; });
+
+  // ─── Mus: rita, sudda, flytta text ────────────────────────────────────────
+  let current = null;     // drag som pågår (rita eller sudda)
+  let dragLabel = null;   // text som flyttas
 
   // Hur många kartpixlar en skärmpixel motsvarar just nu
   function mapScale() {
@@ -431,31 +516,61 @@
   canvas.addEventListener('mousedown', e => {
     if (e.button !== 0) return;
     e.preventDefault();
+    const p = toMap(e);
+
     if (state.tool === 'text') {
-      handleTextClick(e);
+      const g = labelAt(p);
+      if (g !== null) {
+        closePopup();
+        const l = state.labels[g];
+        dragLabel = { group: g, dx: l.x - p.x, dy: l.y - p.y, sx: e.clientX, sy: e.clientY, moved: false };
+        return;
+      }
+      handleAreaClick(e, p);
       return;
     }
+
     closePopup();
-    current = { color: state.color, width: state.size * mapScale(), points: [toMap(e)], group: null };
+    current = {
+      erase: state.tool === 'erase',
+      color: state.color,
+      width: state.size * mapScale(),
+      points: [p],
+      group: null
+    };
     state.strokes.push(current);
-    drawStroke(current);
+    scheduleCompose();
   });
 
   window.addEventListener('mousemove', e => {
+    if (dragLabel) {
+      if (!dragLabel.moved && Math.hypot(e.clientX - dragLabel.sx, e.clientY - dragLabel.sy) > 3) {
+        dragLabel.moved = true;
+      }
+      if (dragLabel.moved) {
+        const p = toMap(e);
+        const l = state.labels[dragLabel.group];
+        l.x = Math.max(0, Math.min(canvas.width, p.x + dragLabel.dx));
+        l.y = Math.max(0, Math.min(canvas.height, p.y + dragLabel.dy));
+        scheduleCompose();
+      }
+      return;
+    }
     if (!current) return;
-    const p = toMap(e);
-    const last = current.points[current.points.length - 1];
-    current.points.push(p);
-    applyStyle(current);
-    ctx.beginPath();
-    ctx.moveTo(last.x, last.y);
-    ctx.lineTo(p.x, p.y);
-    ctx.stroke();
+    current.points.push(toMap(e));
+    scheduleCompose();
   });
 
-  window.addEventListener('mouseup', () => {
+  window.addEventListener('mouseup', e => {
+    if (dragLabel) {
+      const d = dragLabel;
+      dragLabel = null;
+      if (!d.moved) openPopup(e, d.group, null);   // bara ett klick → ändra texten
+      else compose();
+      return;
+    }
     if (!current) return;
-    assignGroup(current);
+    if (!current.erase) assignGroup(current);
     current = null;
     redraw();
   });
@@ -464,7 +579,7 @@
   function assignGroup(s) {
     const touching = [];
     state.strokes.forEach(o => {
-      if (o !== s && o.color === s.color && !touching.includes(o.group) && strokesTouch(o, s)) {
+      if (o !== s && !o.erase && o.color === s.color && !touching.includes(o.group) && strokesTouch(o, s)) {
         touching.push(o.group);
       }
     });
@@ -515,6 +630,30 @@
            b.points.some(p => distToStroke(p, a) <= limit);
   }
 
+  // Vilket område finns under en punkt? (null om ingen färg, eller bortsuddat)
+  function groupAt(p) {
+    const tolerance = 4 * mapScale();
+    for (let i = state.strokes.length - 1; i >= 0; i--) {
+      const s = state.strokes[i];
+      if (s.erase) {
+        if (distToStroke(p, s) <= s.width / 2) return null;
+      } else if (distToStroke(p, s) <= s.width / 2 + tolerance) {
+        return s.group;
+      }
+    }
+    return null;
+  }
+
+  // Vilken text finns under en punkt?
+  function labelAt(p) {
+    const keys = Object.keys(state.labels);
+    for (let i = keys.length - 1; i >= 0; i--) {
+      const b = state.labels[keys[i]].box;
+      if (b && p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) return +keys[i];
+    }
+    return null;
+  }
+
   // ─── Skriv text på ett område ─────────────────────────────────────────────
   const popup       = document.getElementById('labelPopup');
   const popupTitle  = document.getElementById('labelPopupTitle');
@@ -522,31 +661,14 @@
   const deleteBtn   = document.getElementById('labelDeleteBtn');
   let popupTarget = null;   // { group, point }
 
-  function handleTextClick(e) {
-    const p = toMap(e);
-
-    // Klick på en befintlig text → ändra den
-    const hitText = Object.keys(state.labels).find(g => {
-      const b = state.labels[g].box;
-      return b && p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
-    });
-    if (hitText) {
-      openPopup(e, +hitText, null);
+  function handleAreaClick(e, p) {
+    const g = groupAt(p);
+    if (g === null) {
+      closePopup();
+      showHint('Klicka på ett område som du har färgat.');
       return;
     }
-
-    // Klick på ett färgat område
-    const tolerance = 4 * mapScale();
-    for (let i = state.strokes.length - 1; i >= 0; i--) {
-      const s = state.strokes[i];
-      if (distToStroke(p, s) <= s.width / 2 + tolerance) {
-        openPopup(e, s.group, p);
-        return;
-      }
-    }
-
-    closePopup();
-    showHint('Klicka på ett område som du har färgat.');
+    openPopup(e, g, p);
   }
 
   function openPopup(e, group, point) {
@@ -583,7 +705,7 @@
       state.labels[group] = { text, x: point.x, y: point.y, size: 15 * mapScale() };
     }
     closePopup();
-    redraw();
+    compose();
   }
 
   document.getElementById('labelSaveBtn').addEventListener('click', saveLabel);
@@ -591,7 +713,7 @@
   deleteBtn.addEventListener('click', () => {
     if (popupTarget) delete state.labels[popupTarget.group];
     closePopup();
-    redraw();
+    compose();
   });
   labelInput.addEventListener('keydown', e => {
     if (e.key === 'Enter') saveLabel();
@@ -603,28 +725,132 @@
     if (!popup.hidden && !popup.contains(e.target) && e.target !== canvas) closePopup();
   });
 
-  // ─── Rita upp kartan ──────────────────────────────────────────────────────
-  function applyStyle(s) {
-    ctx.strokeStyle = s.color;
-    ctx.fillStyle = s.color;
-    ctx.lineWidth = s.width;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-  }
+  // ─── Spara som PNG ────────────────────────────────────────────────────────
+  document.getElementById('savePngBtn').addEventListener('click', () => {
+    closePopup();
+    compose();
+    canvas.toBlob(blob => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'tradgardskarta.png';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    }, 'image/png');
+  });
 
-  function drawStroke(s) {
-    applyStyle(s);
+  // ─── Rita upp kartan ──────────────────────────────────────────────────────
+  function strokePath(c, s) {
+    c.strokeStyle = s.color;
+    c.fillStyle = s.color;
+    c.lineWidth = s.width;
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
     if (s.points.length === 1) {
       const p = s.points[0];
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, s.width / 2, 0, Math.PI * 2);
-      ctx.fill();
+      c.beginPath();
+      c.arc(p.x, p.y, s.width / 2, 0, Math.PI * 2);
+      c.fill();
       return;
     }
-    ctx.beginPath();
-    ctx.moveTo(s.points[0].x, s.points[0].y);
-    for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y);
-    ctx.stroke();
+    c.beginPath();
+    c.moveTo(s.points[0].x, s.points[0].y);
+    for (let i = 1; i < s.points.length; i++) c.lineTo(s.points[i].x, s.points[i].y);
+    c.stroke();
+  }
+
+  function clear(c) {
+    c.globalCompositeOperation = 'source-over';
+    c.globalAlpha = 1;
+    c.clearRect(0, 0, c.canvas.width, c.canvas.height);
+  }
+
+  // Bygger upp alla färgområden: genomskinlig yta + mer mättad kant.
+  // Varje område ritas först helt täckande (så att överlappande drag inte
+  // blir mörkare), och delas sedan upp i en inre yta och en kant.
+  function renderAreas() {
+    clear(actx);
+    const order = [];
+    state.strokes.forEach(s => { if (!s.erase && !order.includes(s.group)) order.push(s.group); });
+
+    order.forEach(g => {
+      // 1. Hela området, täckande, med suddningar borttagna
+      clear(mctx);
+      state.strokes.forEach(s => {
+        if (s.erase) {
+          mctx.globalCompositeOperation = 'destination-out';
+          strokePath(mctx, s);
+        } else if (s.group === g) {
+          mctx.globalCompositeOperation = 'source-over';
+          strokePath(mctx, s);
+        }
+      });
+      mctx.globalCompositeOperation = 'source-over';
+
+      // 2. Inre yta = området krympt med kantens bredd
+      const own = state.strokes.filter(s => s.group === g);
+      const avgW = own.reduce((sum, s) => sum + s.width, 0) / own.length;
+      const edge = Math.max(2 * mapScale(), avgW * 0.18);
+      clear(ictx);
+      ictx.drawImage(mask, 0, 0);
+      ictx.globalCompositeOperation = 'destination-in';
+      for (let k = 0; k < 16; k++) {
+        const a = (k / 16) * Math.PI * 2;
+        ictx.drawImage(mask, Math.cos(a) * edge, Math.sin(a) * edge);
+      }
+      ictx.globalCompositeOperation = 'source-over';
+
+      // 3. Kant = hela området minus inre yta
+      mctx.globalCompositeOperation = 'destination-out';
+      mctx.drawImage(inner, 0, 0);
+      mctx.globalCompositeOperation = 'source-over';
+
+      // 4. Lägg på med olika genomskinlighet
+      actx.globalAlpha = FILL_ALPHA;
+      actx.drawImage(inner, 0, 0);
+      actx.globalAlpha = EDGE_ALPHA;
+      actx.drawImage(mask, 0, 0);
+      actx.globalAlpha = 1;
+    });
+  }
+
+  // Sätter ihop det som syns: karta + färgområden + pågående drag + texter
+  function compose() {
+    clear(ctx);
+    if (state.img) ctx.drawImage(state.img, 0, 0);
+
+    if (current && current.erase) {
+      clear(tctx);
+      tctx.drawImage(areas, 0, 0);
+      tctx.globalCompositeOperation = 'destination-out';
+      strokePath(tctx, current);
+      tctx.globalCompositeOperation = 'source-over';
+      ctx.drawImage(temp, 0, 0);
+    } else {
+      ctx.drawImage(areas, 0, 0);
+      if (current) {
+        clear(tctx);
+        strokePath(tctx, current);
+        ctx.globalAlpha = FILL_ALPHA;
+        ctx.drawImage(temp, 0, 0);
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    Object.values(state.labels).forEach(drawLabel);
+  }
+
+  let composePending = false;
+  function scheduleCompose() {
+    if (composePending) return;
+    composePending = true;
+    requestAnimationFrame(() => { composePending = false; compose(); });
+  }
+
+  function redraw() {
+    renderAreas();
+    compose();
   }
 
   function drawLabel(l) {
@@ -653,13 +879,6 @@
     ctx.fillText(l.text, l.x, l.y);
 
     l.box = { x, y, w, h };
-  }
-
-  function redraw() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (state.img) ctx.drawImage(state.img, 0, 0);
-    state.strokes.forEach(drawStroke);
-    Object.values(state.labels).forEach(drawLabel);
   }
 </script>
 </body>
