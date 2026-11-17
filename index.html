@@ -332,12 +332,14 @@
   <div class="toolbar" id="toolbar" hidden>
     <div class="tool-group">
       <button class="btn" id="newMapBtn" title="Börja om med en ny kartbild">Ny karta</button>
+      <button class="btn btn-light" id="newBlankBtn" title="Rita en egen karta från början">📐 Ny tom karta</button>
       <button class="btn btn-light" id="openProjectBtn" title="Öppna ett projekt som du har sparat">📂 Öppna projekt</button>
     </div>
 
     <div class="tool-group">
       <span class="tool-label">Verktyg</span>
       <button class="tool-btn active" data-tool="draw" title="Rita på kartan"><span class="icon">✏️</span>Rita</button>
+      <button class="tool-btn" data-tool="line" title="Rita raka kartlinjer, t.ex. hus, staket och gångar"><span class="icon">📏</span>Linje</button>
       <button class="tool-btn eraser" data-tool="erase" title="Sudda ut färg"><span class="icon">🧽</span>Sudda</button>
       <button class="tool-btn" data-tool="text" title="Skriv eller flytta text"><span class="icon">🏷️</span>Text</button>
       <button class="btn btn-light" id="undoBtn" title="Ångra senaste ändringen (Ctrl+Z)" disabled>↶ Ångra</button>
@@ -367,9 +369,10 @@
   <div class="stage">
     <div class="dropzone" id="dropzone">
       <h2>Ladda upp en karta</h2>
-      <p>Dra in en kartbild eller en sparad projektfil hit, eller klicka på en knapp.</p>
+      <p>Dra in en kartbild eller en sparad projektfil hit, eller klicka på en knapp. Du kan också rita en egen karta från början.</p>
       <div class="dropzone-buttons">
         <button class="btn" id="uploadBtn">Välj bild</button>
+        <button class="btn btn-light" id="blankBtn">📐 Rita egen karta</button>
         <button class="btn btn-light" id="openProjectBtn2">📂 Öppna sparat projekt</button>
       </div>
     </div>
@@ -404,6 +407,15 @@
   </div>
 </div>
 
+<div class="label-popup" id="linePopup" hidden>
+  <div class="label-popup-title">Kartlinje</div>
+  <div class="label-popup-row">
+    <button class="btn btn-danger" id="lineDeleteBtn">Ta bort linjen</button>
+    <button class="btn btn-light" id="lineStartBtn">Börja ny linje här</button>
+    <button class="btn btn-light" id="lineCancelBtn">Avbryt</button>
+  </div>
+</div>
+
 <script>
   // ─── Tillstånd ────────────────────────────────────────────────────────────
   // Varje markering sparas som ett eget "drag" (färg, tjocklek, punkter, område).
@@ -417,6 +429,8 @@
     imgData: null,     // kartbilden som text (data-URL), behövs för att spara projektet
     strokes: [],
     labels: {},
+    lines: [],         // raka kartlinjer (underlag): { color, width, points }
+    blank: false,      // true = egen ritad karta (visar rutnät)
     color: '#2e7d32',
     size: 8,
     tool: 'draw'
@@ -429,10 +443,11 @@
 
   const MAX_UNDO = 50;
 
-  const COLORS = ['#2e7d32', '#8bc34a', '#f9a825', '#e65100', '#c62828', '#ad1457', '#6a1b9a', '#1565c0', '#6d4c41', '#ffffff'];
+  const COLORS = ['#2e7d32', '#8bc34a', '#f9a825', '#e65100', '#c62828', '#ad1457', '#6a1b9a', '#1565c0', '#6d4c41', '#37474f', '#000000', '#ffffff'];
 
   const HINTS = {
     draw:  'Håll in vänster musknapp och rita på kartan.',
+    line:  '📏 Klicka där linjen ska börja och vid varje hörn. Dubbelklicka eller tryck Enter för att avsluta. Håll in Shift för raka vinklar. Klicka på en befintlig linje för att ta bort den.',
     erase: '🧽 Suddgummit är valt – håll in vänster musknapp och dra över färg för att sudda ut den.',
     text:  'Klicka på ett färgat område för att skriva, ändra eller ta bort dess text. Dra i en text för att flytta den.'
   };
@@ -473,6 +488,24 @@
     if (confirmReplace()) imageInput.click();
   });
   document.getElementById('openProjectBtn2').addEventListener('click', () => projectInput.click());
+  document.getElementById('blankBtn').addEventListener('click', newBlankMap);
+  document.getElementById('newBlankBtn').addEventListener('click', () => {
+    if (confirmReplace()) newBlankMap();
+  });
+
+  // Egen karta: ett vitt papper som man ritar kartlinjer på
+  function newBlankMap() {
+    const c = document.createElement('canvas');
+    c.width = 2000;
+    c.height = 1400;
+    const x = c.getContext('2d');
+    x.fillStyle = '#ffffff';
+    x.fillRect(0, 0, c.width, c.height);
+    startProject(
+      { image: c.toDataURL('image/png'), blank: true, strokes: [], labels: {}, lines: [], nextGroup: 1 },
+      'En tom karta har skapats. Rita upp din trädgård med 📏 Linje – välj gärna svart eller grå färg.'
+    );
+  }
   document.getElementById('openProjectBtn').addEventListener('click', () => {
     if (confirmReplace()) projectInput.click();
   });
@@ -535,6 +568,10 @@
       state.imgData = p.image;
       state.strokes = (p.strokes || []).map(s => ({ ...s }));
       state.labels = copyLabels(p.labels || {});
+      state.lines = (p.lines || []).map(l => ({ ...l }));
+      state.blank = !!p.blank;
+      lineDraft = null;
+      lineHover = null;
       nextGroup = p.nextGroup || (Math.max(0, ...state.strokes.map(s => s.group || 0)) + 1);
       undoStack = [];
       updateUndoBtn();
@@ -551,7 +588,7 @@
       bottomArea.hidden = false;
       hintEl.hidden = false;
       fitMap();
-      setTool('draw');
+      setTool(state.blank && !state.lines.length ? 'line' : 'draw');
       if (message) showHint(message, 'info');
       redraw();
       if (!isRestore) changed();
@@ -577,7 +614,13 @@
       version: 1,
       saved: new Date().toISOString(),
       image: state.imgData,
+      blank: state.blank,
       nextGroup,
+      lines: state.lines.map(l => ({
+        color: l.color,
+        width: r(l.width),
+        points: l.points.map(p => ({ x: r(p.x), y: r(p.y) }))
+      })),
       strokes: state.strokes.map(s => ({
         erase: !!s.erase,
         color: s.color,
@@ -670,6 +713,7 @@
     return {
       strokes: state.strokes.map(s => ({ ...s })),
       labels: copyLabels(state.labels),
+      lines: state.lines.slice(),
       nextGroup
     };
   }
@@ -685,6 +729,7 @@
     const s = undoStack.pop();
     state.strokes = s.strokes;
     state.labels = s.labels;
+    state.lines = s.lines;
     nextGroup = s.nextGroup;
     closePopup();
     redraw();
@@ -704,6 +749,13 @@
       if (e.target === document.getElementById('labelInput')) return;
       if (!state.img) return;
       e.preventDefault();
+      // Medan man ritar en linje tar Ctrl+Z bort senaste hörnet
+      if (lineDraft) {
+        lineDraft.points.pop();
+        if (!lineDraft.points.length) lineDraft = null;
+        compose();
+        return;
+      }
       undo();
     }
   });
@@ -714,6 +766,7 @@
   });
 
   function setTool(tool) {
+    if (lineDraft && tool !== 'line') finishLine();
     state.tool = tool;
     document.querySelectorAll('.tool-btn').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
     canvas.classList.toggle('text-mode', tool === 'text');
@@ -740,7 +793,7 @@
     swatchesEl.querySelectorAll('.swatch').forEach(s => {
       s.classList.toggle('active', s.title === c);
     });
-    if (state.tool !== 'draw') setTool('draw');
+    if (state.tool === 'erase' || state.tool === 'text') setTool('draw');
     updatePreview();
   }
 
@@ -862,6 +915,14 @@
 
   // ─── Ring som visar penselns/suddgummits storlek ──────────────────────────
   canvas.addEventListener('mousemove', e => {
+    if (state.tool === 'line') {
+      brushRing.hidden = true;
+      if (lineDraft) {
+        lineHover = linePointFor(e, toMap(e));
+        scheduleCompose();
+      }
+      return;
+    }
     if (state.tool === 'text' || spaceDown || pan) { brushRing.hidden = true; return; }
     brushRing.hidden = false;
     brushRing.className = 'brush-ring ' + state.tool;
@@ -902,6 +963,11 @@
     if (e.button !== 0) return;
     e.preventDefault();
     const p = toMap(e);
+
+    if (state.tool === 'line') {
+      handleLineDown(e, p);
+      return;
+    }
 
     if (state.tool === 'text') {
       const g = labelAt(p);
@@ -976,6 +1042,141 @@
     redraw();
     changed();
   });
+
+  // ─── Raka kartlinjer ──────────────────────────────────────────────────────
+  // Klicka punkt för punkt. Dubbelklick, Enter eller Esc avslutar.
+  // Klick på egen startpunkt stänger figuren. Shift = 0°, 45°, 90° …
+  // Nya linjer fäster mot ändpunkter på befintliga linjer.
+  let lineDraft = null;    // linje som ritas just nu
+  let lineHover = null;    // muspekarens position, för förhandsvisning
+  let lineTarget = null;   // befintlig linje som klickats på { index, point }
+
+  function snapAngle(from, p) {
+    const dx = p.x - from.x, dy = p.y - from.y;
+    const len = Math.hypot(dx, dy);
+    const a = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
+    return { x: from.x + Math.cos(a) * len, y: from.y + Math.sin(a) * len };
+  }
+
+  function snapEndpoint(p) {
+    let best = null, bestD = 8 * mapScale();
+    state.lines.forEach(l => {
+      [l.points[0], l.points[l.points.length - 1]].forEach(q => {
+        const d = Math.hypot(q.x - p.x, q.y - p.y);
+        if (d <= bestD) { bestD = d; best = { x: q.x, y: q.y }; }
+      });
+    });
+    return best;
+  }
+
+  // Var nästa hörn hamnar (med Shift-vinkel eller fäst mot ändpunkt)
+  function linePointFor(e, raw) {
+    if (lineDraft && e.shiftKey) return snapAngle(lineDraft.points[lineDraft.points.length - 1], raw);
+    return snapEndpoint(raw) || raw;
+  }
+
+  function lineAt(p) {
+    const tol = 5 * mapScale();
+    for (let i = state.lines.length - 1; i >= 0; i--) {
+      const l = state.lines[i];
+      if (distToStroke(p, l) <= l.width / 2 + tol) return i;
+    }
+    return -1;
+  }
+
+  function handleLineDown(e, raw) {
+    // Ett klick bredvid en öppen ruta stänger bara rutan
+    const hadPopup = !linePopup.hidden;
+    closePopup();
+    if (hadPopup) return;
+
+    if (!lineDraft) {
+      const ep = snapEndpoint(raw);
+      if (!ep) {
+        const i = lineAt(raw);
+        if (i >= 0) { openLinePopup(e, i, raw); return; }
+      }
+      lineDraft = { color: state.color, width: state.size * baseScale(), points: [ep || raw] };
+      lineHover = null;
+      scheduleCompose();
+      return;
+    }
+
+    // Klick på startpunkten stänger figuren (t.ex. ett hus)
+    const first = lineDraft.points[0];
+    if (lineDraft.points.length >= 3 && Math.hypot(raw.x - first.x, raw.y - first.y) <= 8 * mapScale()) {
+      lineDraft.points.push({ x: first.x, y: first.y });
+      finishLine();
+      return;
+    }
+
+    const p = linePointFor(e, raw);
+    const last = lineDraft.points[lineDraft.points.length - 1];
+    if (Math.hypot(p.x - last.x, p.y - last.y) < 2 * mapScale()) return;   // samma punkt (dubbelklick)
+    lineDraft.points.push({ x: p.x, y: p.y });
+    scheduleCompose();
+  }
+
+  function finishLine() {
+    if (!lineDraft) return;
+    const d = lineDraft;
+    lineDraft = null;
+    lineHover = null;
+    if (d.points.length >= 2) {
+      pushUndo();
+      state.lines.push(d);
+      changed();
+    }
+    compose();
+  }
+
+  canvas.addEventListener('dblclick', e => {
+    if (state.tool === 'line' && lineDraft) {
+      e.preventDefault();
+      finishLine();
+    }
+  });
+
+  document.addEventListener('keydown', e => {
+    if (!lineDraft || isTyping(e)) return;
+    if (e.key === 'Enter' || e.key === 'Escape') {
+      e.preventDefault();
+      finishLine();
+    }
+  });
+
+  // Ruta för att ta bort en befintlig linje
+  const linePopup = document.getElementById('linePopup');
+
+  function placePopup(el, e) {
+    el.hidden = false;
+    const w = el.offsetWidth;
+    const left = Math.max(8, Math.min(e.pageX - w / 2, document.documentElement.clientWidth - w - 8));
+    el.style.left = left + 'px';
+    el.style.top = (e.pageY + 14) + 'px';
+  }
+
+  function openLinePopup(e, index, point) {
+    lineTarget = { index, point };
+    placePopup(linePopup, e);
+    compose();
+  }
+
+  document.getElementById('lineDeleteBtn').addEventListener('click', () => {
+    if (lineTarget) {
+      pushUndo();
+      state.lines.splice(lineTarget.index, 1);
+      changed();
+    }
+    closePopup();
+  });
+  document.getElementById('lineStartBtn').addEventListener('click', () => {
+    if (lineTarget) {
+      lineDraft = { color: state.color, width: state.size * baseScale(), points: [lineTarget.point] };
+    }
+    closePopup();
+  });
+  document.getElementById('lineCancelBtn').addEventListener('click', () => closePopup());
 
   // ─── Områden: drag i samma färg som rör vid varandra slås ihop ────────────
   function assignGroup(s) {
@@ -1080,11 +1281,7 @@
     labelInput.value = existing ? existing.text : '';
     deleteBtn.hidden = !existing;
 
-    popup.hidden = false;
-    const w = popup.offsetWidth;
-    const left = Math.max(8, Math.min(e.pageX - w / 2, document.documentElement.clientWidth - w - 8));
-    popup.style.left = left + 'px';
-    popup.style.top = (e.pageY + 14) + 'px';
+    placePopup(popup, e);
 
     labelInput.focus();
     labelInput.select();
@@ -1093,6 +1290,11 @@
   function closePopup() {
     popup.hidden = true;
     popupTarget = null;
+    if (lineTarget) {
+      linePopup.hidden = true;
+      lineTarget = null;
+      compose();
+    }
   }
 
   function saveLabel() {
@@ -1135,14 +1337,16 @@
 
   // Klick utanför textrutan stänger den
   document.addEventListener('mousedown', e => {
-    if (!popup.hidden && !popup.contains(e.target) && e.target !== canvas) closePopup();
+    const open = !popup.hidden || !linePopup.hidden;
+    if (open && !popup.contains(e.target) && !linePopup.contains(e.target) && e.target !== canvas) closePopup();
   });
 
   // ─── Spara som PNG ────────────────────────────────────────────────────────
   document.getElementById('savePngBtn').addEventListener('click', () => {
     closePopup();
-    compose();
+    compose(true);   // utan rutnät och förhandsvisningar
     canvas.toBlob(blob => downloadBlob(blob, 'tradgardskarta.png'), 'image/png');
+    compose();
   });
 
   // ─── Rita upp kartan ──────────────────────────────────────────────────────
@@ -1220,10 +1424,53 @@
     });
   }
 
-  // Sätter ihop det som syns: karta + färgområden + pågående drag + texter
-  function compose() {
+  // Svagt rutnät på egna kartor (syns bara på skärmen, inte i PNG)
+  function drawGrid() {
+    const step = 50;
+    ctx.lineWidth = Math.max(1, baseScale());
+    for (let i = 0, x = 0; x <= canvas.width; i++, x += step) {
+      ctx.strokeStyle = i % 5 === 0 ? 'rgba(0,0,0,0.13)' : 'rgba(0,0,0,0.05)';
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+    }
+    for (let i = 0, y = 0; y <= canvas.height; i++, y += step) {
+      ctx.strokeStyle = i % 5 === 0 ? 'rgba(0,0,0,0.13)' : 'rgba(0,0,0,0.05)';
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+    }
+  }
+
+  // Linjen som ritas just nu: fasta delar + streckad del till muspekaren
+  function drawLineDraft() {
+    const d = lineDraft;
+    if (d.points.length >= 2) strokePath(ctx, d);
+    const last = d.points[d.points.length - 1];
+    if (lineHover) {
+      ctx.setLineDash([d.width * 1.5 + 4 * mapScale(), d.width * 1.5 + 4 * mapScale()]);
+      strokePath(ctx, { color: d.color, width: d.width, points: [last, lineHover] });
+      ctx.setLineDash([]);
+    }
+    // Markera startpunkten, så man ser var man kan stänga figuren
+    const first = d.points[0];
+    ctx.beginPath();
+    ctx.arc(first.x, first.y, Math.max(d.width, 6 * mapScale()), 0, Math.PI * 2);
+    ctx.lineWidth = 2 * mapScale();
+    ctx.strokeStyle = '#b23b00';
+    ctx.stroke();
+  }
+
+  // Sätter ihop det som syns: karta + kartlinjer + färgområden + pågående drag + texter
+  // forExport = true ger bilden utan rutnät och förhandsvisningar (för PNG)
+  function compose(forExport) {
     clear(ctx);
     if (state.img) ctx.drawImage(state.img, 0, 0);
+    if (state.blank && !forExport) drawGrid();
+
+    // Kartlinjer ligger i underlaget, under färgområdena
+    state.lines.forEach((l, i) => {
+      if (!forExport && lineTarget && lineTarget.index === i) {
+        strokePath(ctx, { color: 'rgba(178,59,0,0.45)', width: l.width + 8 * mapScale(), points: l.points });
+      }
+      strokePath(ctx, l);
+    });
 
     if (current && current.erase) {
       clear(tctx);
@@ -1242,6 +1489,8 @@
         ctx.globalAlpha = 1;
       }
     }
+
+    if (lineDraft && !forExport) drawLineDraft();
 
     Object.values(state.labels).forEach(drawLabel);
   }
