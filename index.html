@@ -49,6 +49,7 @@
     }
     .tool-group {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: 10px;
     }
@@ -73,12 +74,17 @@
       transition: background 0.2s;
     }
     .btn:hover { background: #3d7543; }
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
 
     .btn-light {
       background: #fff;
       color: #2f5d34;
     }
     .btn-light:hover { background: #eef5ea; }
+    .btn-light:disabled:hover { background: #fff; }
 
     .btn-danger {
       background: #fff;
@@ -173,6 +179,7 @@
     }
     .hint.warn { color: #b23b00; font-weight: 600; }
     .hint.erase { color: #b23b00; font-weight: 600; }
+    .hint.info { color: #2f5d34; font-weight: 600; }
 
     .dropzone {
       border: 3px dashed #b7c4b0;
@@ -192,6 +199,12 @@
       color: #2f5d34;
     }
     .dropzone p { margin: 0 0 18px; }
+    .dropzone-buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: center;
+    }
 
     canvas {
       display: block;
@@ -221,12 +234,22 @@
       background: rgba(255,255,255,0.45);
     }
 
-    /* Knapp längst ned */
+    /* Knappar längst ned */
     .bottom-bar {
       display: flex;
+      flex-wrap: wrap;
       justify-content: center;
+      gap: 12px;
       margin-top: 18px;
     }
+    .save-status {
+      text-align: center;
+      font-size: 0.85rem;
+      color: #5b665b;
+      margin-top: 10px;
+      min-height: 1.2em;
+    }
+    .save-status.warn { color: #b23b00; font-weight: 600; }
 
     /* Textruta för områden */
     .label-popup {
@@ -278,7 +301,8 @@
 
   <div class="toolbar" id="toolbar" hidden>
     <div class="tool-group">
-      <button class="btn" id="changeMapBtn">Byt karta</button>
+      <button class="btn" id="newMapBtn" title="Börja om med en ny kartbild">Ny karta</button>
+      <button class="btn btn-light" id="openProjectBtn" title="Öppna ett projekt som du har sparat">📂 Öppna projekt</button>
     </div>
 
     <div class="tool-group">
@@ -286,6 +310,7 @@
       <button class="tool-btn active" data-tool="draw" title="Rita på kartan"><span class="icon">✏️</span>Rita</button>
       <button class="tool-btn eraser" data-tool="erase" title="Sudda ut färg"><span class="icon">🧽</span>Sudda</button>
       <button class="tool-btn" data-tool="text" title="Skriv eller flytta text"><span class="icon">🏷️</span>Text</button>
+      <button class="btn btn-light" id="undoBtn" title="Ångra senaste ändringen (Ctrl+Z)" disabled>↶ Ångra</button>
     </div>
 
     <div class="tool-group">
@@ -304,18 +329,26 @@
   <div class="stage">
     <div class="dropzone" id="dropzone">
       <h2>Ladda upp en karta</h2>
-      <p>Dra in en bild hit, eller klicka på knappen.</p>
-      <button class="btn" id="uploadBtn">Välj bild</button>
+      <p>Dra in en kartbild eller en sparad projektfil hit, eller klicka på en knapp.</p>
+      <div class="dropzone-buttons">
+        <button class="btn" id="uploadBtn">Välj bild</button>
+        <button class="btn btn-light" id="openProjectBtn2">📂 Öppna sparat projekt</button>
+      </div>
     </div>
     <p class="hint" id="hint" hidden></p>
     <canvas id="canvas" hidden></canvas>
   </div>
 
-  <div class="bottom-bar" id="bottomBar" hidden>
-    <button class="btn btn-big" id="savePngBtn">💾 Spara bilden som PNG</button>
+  <div id="bottomArea" hidden>
+    <div class="bottom-bar">
+      <button class="btn btn-big" id="saveProjectBtn" title="Spara projektet som en fil som du kan öppna och fortsätta med senare">💾 Spara projekt</button>
+      <button class="btn btn-big btn-light" id="savePngBtn" title="Spara kartan som en vanlig bild">🖼️ Spara bilden som PNG</button>
+    </div>
+    <div class="save-status" id="saveStatus"></div>
   </div>
 
-  <input type="file" id="fileInput" accept="image/*" hidden />
+  <input type="file" id="imageInput" accept="image/*" hidden />
+  <input type="file" id="projectInput" accept=".json,application/json" hidden />
 </div>
 
 <div class="brush-ring" id="brushRing" hidden></div>
@@ -340,6 +373,7 @@
   // oavsett hur stor kartan visas på skärmen.
   const state = {
     img: null,
+    imgData: null,     // kartbilden som text (data-URL), behövs för att spara projektet
     strokes: [],
     labels: {},
     color: '#2e7d32',
@@ -352,6 +386,8 @@
   const FILL_ALPHA = 0.4;
   const EDGE_ALPHA = 0.7;
 
+  const MAX_UNDO = 50;
+
   const COLORS = ['#2e7d32', '#8bc34a', '#f9a825', '#e65100', '#c62828', '#ad1457', '#6a1b9a', '#1565c0', '#6d4c41', '#ffffff'];
 
   const HINTS = {
@@ -360,18 +396,21 @@
     text:  'Klicka på ett färgat område för att skriva, ändra eller ta bort dess text. Dra i en text för att flytta den.'
   };
 
-  const canvas      = document.getElementById('canvas');
-  const ctx         = canvas.getContext('2d');
-  const dropzone    = document.getElementById('dropzone');
-  const toolbar     = document.getElementById('toolbar');
-  const bottomBar   = document.getElementById('bottomBar');
-  const hintEl      = document.getElementById('hint');
-  const fileInput   = document.getElementById('fileInput');
-  const swatchesEl  = document.getElementById('swatches');
-  const customColor = document.getElementById('customColor');
-  const sizeSlider  = document.getElementById('sizeSlider');
-  const sizeDot     = document.getElementById('sizeDot');
-  const brushRing   = document.getElementById('brushRing');
+  const canvas       = document.getElementById('canvas');
+  const ctx          = canvas.getContext('2d');
+  const dropzone     = document.getElementById('dropzone');
+  const toolbar      = document.getElementById('toolbar');
+  const bottomArea   = document.getElementById('bottomArea');
+  const hintEl       = document.getElementById('hint');
+  const imageInput   = document.getElementById('imageInput');
+  const projectInput = document.getElementById('projectInput');
+  const swatchesEl   = document.getElementById('swatches');
+  const customColor  = document.getElementById('customColor');
+  const sizeSlider   = document.getElementById('sizeSlider');
+  const sizeDot      = document.getElementById('sizeDot');
+  const brushRing    = document.getElementById('brushRing');
+  const undoBtn      = document.getElementById('undoBtn');
+  const saveStatus   = document.getElementById('saveStatus');
 
   // Arbetsytor som inte syns: färdiga färgområden + hjälpytor
   const areas = document.createElement('canvas'), actx = areas.getContext('2d');
@@ -379,15 +418,28 @@
   const inner = document.createElement('canvas'), ictx = inner.getContext('2d');
   const temp  = document.createElement('canvas'), tctx = temp.getContext('2d');
 
-  // ─── Ladda upp karta ──────────────────────────────────────────────────────
-  document.getElementById('uploadBtn').addEventListener('click', () => fileInput.click());
-  document.getElementById('changeMapBtn').addEventListener('click', () => {
-    if (state.strokes.length && !confirm('Om du byter karta försvinner dina markeringar och texter. Vill du fortsätta?')) return;
-    fileInput.click();
+  // ─── Ny karta / öppna projekt ─────────────────────────────────────────────
+  function confirmReplace() {
+    if (!state.img) return true;
+    return confirm('Den karta du arbetar med nu ersätts. Om du vill kunna öppna den igen, klicka Avbryt och välj "Spara projekt" först.\n\nVill du fortsätta?');
+  }
+
+  document.getElementById('uploadBtn').addEventListener('click', () => imageInput.click());
+  document.getElementById('newMapBtn').addEventListener('click', () => {
+    if (confirmReplace()) imageInput.click();
   });
-  fileInput.addEventListener('change', () => {
-    loadImage(fileInput.files[0]);
-    fileInput.value = '';
+  document.getElementById('openProjectBtn2').addEventListener('click', () => projectInput.click());
+  document.getElementById('openProjectBtn').addEventListener('click', () => {
+    if (confirmReplace()) projectInput.click();
+  });
+
+  imageInput.addEventListener('change', () => {
+    loadImageFile(imageInput.files[0]);
+    imageInput.value = '';
+  });
+  projectInput.addEventListener('change', () => {
+    loadProjectFile(projectInput.files[0]);
+    projectInput.value = '';
   });
 
   dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('over'); });
@@ -395,20 +447,55 @@
   dropzone.addEventListener('drop', e => {
     e.preventDefault();
     dropzone.classList.remove('over');
-    loadImage(e.dataTransfer.files[0]);
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    if (isProjectFile(file)) loadProjectFile(file);
+    else loadImageFile(file);
   });
 
-  function loadImage(file) {
-    if (!file || !file.type.startsWith('image/')) {
+  function isProjectFile(file) {
+    return file.type === 'application/json' || file.name.toLowerCase().endsWith('.json');
+  }
+
+  function loadImageFile(file) {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
       alert('Välj en bildfil, till exempel .jpg eller .png.');
       return;
     }
+    const reader = new FileReader();
+    reader.onload = () => startProject({ image: reader.result, strokes: [], labels: {}, nextGroup: 1 });
+    reader.readAsDataURL(file);
+  }
+
+  function loadProjectFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      let p = null;
+      try { p = JSON.parse(reader.result); } catch (err) { /* hanteras nedan */ }
+      if (!p || p.app !== 'tradgardskarta' || !p.image) {
+        alert('Filen kunde inte öppnas. Välj en projektfil som är sparad från Trädgårdskarta.');
+        return;
+      }
+      startProject(p, 'Projektet har öppnats.');
+    };
+    reader.readAsText(file);
+  }
+
+  // Startar ett projekt (ny karta, öppnad fil eller automatiskt sparad karta)
+  function startProject(p, message, isRestore) {
     const img = new Image();
     img.onload = () => {
       state.img = img;
-      state.strokes = [];
-      state.labels = {};
+      state.imgData = p.image;
+      state.strokes = (p.strokes || []).map(s => ({ ...s }));
+      state.labels = copyLabels(p.labels || {});
+      nextGroup = p.nextGroup || (Math.max(0, ...state.strokes.map(s => s.group || 0)) + 1);
+      undoStack = [];
+      updateUndoBtn();
       closePopup();
+
       [canvas, areas, mask, inner, temp].forEach(c => {
         c.width = img.naturalWidth;
         c.height = img.naturalHeight;
@@ -416,13 +503,164 @@
       dropzone.hidden = true;
       canvas.hidden = false;
       toolbar.hidden = false;
-      bottomBar.hidden = false;
+      bottomArea.hidden = false;
       hintEl.hidden = false;
-      showHint();
+      setTool('draw');
+      if (message) showHint(message, 'info');
       redraw();
+      if (!isRestore) changed();
     };
-    img.src = URL.createObjectURL(file);
+    img.onerror = () => alert('Kartbilden kunde inte läsas.');
+    img.src = p.image;
   }
+
+  // ─── Spara projekt ────────────────────────────────────────────────────────
+  function copyLabels(labels) {
+    const out = {};
+    Object.keys(labels).forEach(g => {
+      const l = labels[g];
+      out[g] = { text: l.text, x: l.x, y: l.y, size: l.size };
+    });
+    return out;
+  }
+
+  function projectData() {
+    const r = n => Math.round(n * 10) / 10;
+    return {
+      app: 'tradgardskarta',
+      version: 1,
+      saved: new Date().toISOString(),
+      image: state.imgData,
+      nextGroup,
+      strokes: state.strokes.map(s => ({
+        erase: !!s.erase,
+        color: s.color,
+        width: r(s.width),
+        group: s.group,
+        points: s.points.map(p => ({ x: r(p.x), y: r(p.y) }))
+      })),
+      labels: copyLabels(state.labels)
+    };
+  }
+
+  // Spara som fil
+  document.getElementById('saveProjectBtn').addEventListener('click', () => {
+    closePopup();
+    const blob = new Blob([JSON.stringify(projectData())], { type: 'application/json' });
+    const d = new Date();
+    const date = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    downloadBlob(blob, 'tradgardskarta-' + date + '.json');
+    setStatus('💾 Projektfilen har sparats i mappen för hämtade filer. Öppna den igen med "Öppna projekt".');
+  });
+
+  function downloadBlob(blob, name) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+
+  // Automatisk sparning i webbläsaren (IndexedDB – klarar stora kartbilder)
+  function openDb() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open('tradgardskarta', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('projekt');
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  async function dbSet(key, value) {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('projekt', 'readwrite');
+      tx.objectStore('projekt').put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+  async function dbGet(key) {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const req = db.transaction('projekt').objectStore('projekt').get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  let saveTimer = null;
+  function changed() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(async () => {
+      try {
+        await dbSet('current', projectData());
+        const t = new Date();
+        setStatus('✓ Sparat automatiskt i webbläsaren kl. ' + String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0'));
+      } catch (err) {
+        setStatus('Kunde inte spara automatiskt i den här webbläsaren. Använd "Spara projekt" för att inte förlora ditt arbete.', true);
+      }
+    }, 500);
+  }
+
+  function setStatus(text, warn) {
+    saveStatus.textContent = text;
+    saveStatus.classList.toggle('warn', !!warn);
+  }
+
+  // Öppna den senast använda kartan automatiskt
+  (async () => {
+    try {
+      const p = await dbGet('current');
+      if (p && p.image && !state.img) startProject(p, 'Din senaste karta har öppnats.', true);
+    } catch (err) { /* ingen sparad karta */ }
+  })();
+
+  // ─── Ångra ────────────────────────────────────────────────────────────────
+  let undoStack = [];
+
+  function snapshot() {
+    return {
+      strokes: state.strokes.map(s => ({ ...s })),
+      labels: copyLabels(state.labels),
+      nextGroup
+    };
+  }
+
+  function pushUndo(snap) {
+    undoStack.push(snap || snapshot());
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    updateUndoBtn();
+  }
+
+  function undo() {
+    if (!undoStack.length || current || dragLabel) return;
+    const s = undoStack.pop();
+    state.strokes = s.strokes;
+    state.labels = s.labels;
+    nextGroup = s.nextGroup;
+    closePopup();
+    redraw();
+    changed();
+    updateUndoBtn();
+  }
+
+  function updateUndoBtn() {
+    undoBtn.disabled = undoStack.length === 0;
+  }
+
+  undoBtn.addEventListener('click', undo);
+
+  document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+      // I textrutan ångrar Ctrl+Z bara det man skriver
+      if (e.target === document.getElementById('labelInput')) return;
+      if (!state.img) return;
+      e.preventDefault();
+      undo();
+    }
+  });
 
   // ─── Verktyg, färg och tjocklek ───────────────────────────────────────────
   document.querySelectorAll('.tool-btn').forEach(b => {
@@ -471,12 +709,12 @@
 
   // ─── Hjälptext ovanför kartan ─────────────────────────────────────────────
   let hintTimer = null;
-  function showHint(warning) {
+  function showHint(message, kind) {
     clearTimeout(hintTimer);
-    hintEl.classList.remove('warn', 'erase');
-    if (warning) {
-      hintEl.textContent = warning;
-      hintEl.classList.add('warn');
+    hintEl.classList.remove('warn', 'erase', 'info');
+    if (message) {
+      hintEl.textContent = message;
+      hintEl.classList.add(kind || 'warn');
       hintTimer = setTimeout(() => showHint(), 5000);
     } else {
       hintEl.textContent = HINTS[state.tool];
@@ -523,7 +761,7 @@
       if (g !== null) {
         closePopup();
         const l = state.labels[g];
-        dragLabel = { group: g, dx: l.x - p.x, dy: l.y - p.y, sx: e.clientX, sy: e.clientY, moved: false };
+        dragLabel = { group: g, dx: l.x - p.x, dy: l.y - p.y, sx: e.clientX, sy: e.clientY, moved: false, before: snapshot() };
         return;
       }
       handleAreaClick(e, p);
@@ -531,6 +769,7 @@
     }
 
     closePopup();
+    pushUndo();
     current = {
       erase: state.tool === 'erase',
       color: state.color,
@@ -565,14 +804,20 @@
     if (dragLabel) {
       const d = dragLabel;
       dragLabel = null;
-      if (!d.moved) openPopup(e, d.group, null);   // bara ett klick → ändra texten
-      else compose();
+      if (!d.moved) {
+        openPopup(e, d.group, null);   // bara ett klick → ändra texten
+      } else {
+        pushUndo(d.before);
+        compose();
+        changed();
+      }
       return;
     }
     if (!current) return;
     if (!current.erase) assignGroup(current);
     current = null;
     redraw();
+    changed();
   });
 
   // ─── Områden: drag i samma färg som rör vid varandra slås ihop ────────────
@@ -697,21 +942,32 @@
     if (!popupTarget) return;
     const text = labelInput.value.trim();
     const { group, point } = popupTarget;
+    const existing = state.labels[group];
+
+    if (!text && !existing) { closePopup(); return; }
+    if (existing && existing.text === text) { closePopup(); return; }
+
+    pushUndo();
     if (!text) {
       delete state.labels[group];
-    } else if (state.labels[group]) {
-      state.labels[group].text = text;
+    } else if (existing) {
+      existing.text = text;
     } else {
       state.labels[group] = { text, x: point.x, y: point.y, size: 15 * mapScale() };
     }
     closePopup();
     compose();
+    changed();
   }
 
   document.getElementById('labelSaveBtn').addEventListener('click', saveLabel);
   document.getElementById('labelCancelBtn').addEventListener('click', closePopup);
   deleteBtn.addEventListener('click', () => {
-    if (popupTarget) delete state.labels[popupTarget.group];
+    if (popupTarget && state.labels[popupTarget.group]) {
+      pushUndo();
+      delete state.labels[popupTarget.group];
+      changed();
+    }
     closePopup();
     compose();
   });
@@ -729,15 +985,7 @@
   document.getElementById('savePngBtn').addEventListener('click', () => {
     closePopup();
     compose();
-    canvas.toBlob(blob => {
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = 'tradgardskarta.png';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-    }, 'image/png');
+    canvas.toBlob(blob => downloadBlob(blob, 'tradgardskarta.png'), 'image/png');
   });
 
   // ─── Rita upp kartan ──────────────────────────────────────────────────────
